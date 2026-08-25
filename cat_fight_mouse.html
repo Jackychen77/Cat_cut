@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <title>猫咪大战</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+        html, body { background: #000; width: 100%; height: 100%; overflow: hidden; }
+        #wrap { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; background: #000; }
+        canvas { display: block; }
+        #ui { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); color: #fff; font-family: Arial, sans-serif; font-size: 14px; text-align: center; pointer-events: none; white-space: nowrap; }
+        #startBtn { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 16px 36px; font-size: 22px; background: #e74c3c; color: #fff; border: none; border-radius: 12px; cursor: pointer; pointer-events: auto; -webkit-tap-highlight-color: transparent; }
+        #startBtn:active { background: #c0392b; }
+        #gameOver { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; font-family: Arial, sans-serif; text-align: center; }
+        #gameOver h1 { font-size: 36px; color: #e74c3c; margin-bottom: 16px; }
+        #gameOver p { font-size: 20px; margin-bottom: 16px; }
+        #restartBtn { padding: 12px 28px; font-size: 18px; background: #e74c3c; color: #fff; border: none; border-radius: 10px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+        #restartBtn:active { background: #c0392b; }
+        #bombBtn { position: absolute; bottom: 30px; right: 20px; width: 60px; height: 60px; border-radius: 50%; background: rgba(155,89,182,0.7); color: #fff; border: 2px solid #fff; font-size: 12px; font-weight: bold; display: none; align-items: center; justify-content: center; pointer-events: auto; -webkit-tap-highlight-color: transparent; z-index: 10; }
+        #bombBtn:active { background: rgba(155,89,182,1); }
+    </style>
+</head>
+<body>
+<div id="wrap">
+    <div id="ui">
+        <span id="score">🐟 0</span> &nbsp;|&nbsp;
+        <span id="lives">❤️×3</span> &nbsp;|&nbsp;
+        <span id="level">⭐1</span>
+    </div>
+    <canvas id="c"></canvas>
+    <button id="startBtn">🐱 开始冒险</button>
+    <div id="gameOver">
+        <h1>喵~ 结束了</h1>
+        <p id="finalScore"></p>
+        <button id="restartBtn">再来一次 🐾</button>
+    </div>
+    <div id="bombBtn">💣</div>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const wrap = document.getElementById('wrap');
+
+let W, H, game, scale = 1;
+const DESIGN_W = 400, DESIGN_H = 700;
+
+function resize() {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const s = Math.min(vw / DESIGN_W, vh / DESIGN_H);
+    canvas.width = DESIGN_W;
+    canvas.height = DESIGN_H;
+    canvas.style.width = DESIGN_W * s + 'px';
+    canvas.style.height = DESIGN_H * s + 'px';
+    scale = s;
+}
+resize();
+window.addEventListener('resize', resize);
+
+class Game {
+    constructor() {
+        this.score = 0;
+        this.lives = 3;
+        this.level = 1;
+        this.bullets = [];
+        this.enemies = [];
+        this.particles = [];
+        this.powerUps = [];
+        this.running = true;
+        this.shootTimer = 0;
+        this.enemyTimer = 0;
+        this.powerUpTimer = 0;
+        this.bombCount = 1;
+        this.player = { x: DESIGN_W / 2, y: DESIGN_H - 100, w: 50, h: 50, speed: 4, shootRate: 14 };
+        this.touchId = null;
+        this.touchX = 0;
+        this.touchY = 0;
+        this.touchOffsetX = 0;
+        this.touchOffsetY = 0;
+        this.touching = false;
+        this.stars = Array.from({length: 50}, () => ({x: Math.random()*DESIGN_W, y: Math.random()*DESIGN_H, s: Math.random()*2, sp: 0.3+Math.random()*0.7}));
+        this.bindEvents();
+    }
+
+    bindEvents() {
+        canvas.addEventListener('touchstart', this.onTouchStart.bind(this), {passive: false});
+        canvas.addEventListener('touchmove', this.onTouchMove.bind(this), {passive: false});
+        canvas.addEventListener('touchend', this.onTouchEnd.bind(this), {passive: false});
+        this._bombBtn = document.getElementById('bombBtn');
+        this._bombBtn.addEventListener('touchstart', (e) => { e.stopPropagation(); this.bomb(); }, {passive: false});
+    }
+
+    getPos(touch) {
+        const rect = canvas.getBoundingClientRect();
+        return {
+            x: (touch.clientX - rect.left) / scale,
+            y: (touch.clientY - rect.top) / scale
+        };
+    }
+
+    onTouchStart(e) {
+        e.preventDefault();
+        const t = e.changedTouches[0];
+        const pos = this.getPos(t);
+        this.touchId = t.identifier;
+        this.touchX = pos.x;
+        this.touchY = pos.y;
+        this.touchOffsetX = pos.x - this.player.x;
+        this.touchOffsetY = pos.y - this.player.y;
+        this.touching = true;
+    }
+
+    onTouchMove(e) {
+        e.preventDefault();
+        for (let t of e.changedTouches) {
+            if (t.identifier === this.touchId) {
+                const pos = this.getPos(t);
+                this.player.x = Math.max(this.player.w/2, Math.min(DESIGN_W - this.player.w/2, pos.x - this.touchOffsetX));
+                this.player.y = Math.max(this.player.h/2, Math.min(DESIGN_H - this.player.h/2, pos.y - this.touchOffsetY));
+            }
+        }
+    }
+
+    onTouchEnd(e) {
+        e.preventDefault();
+        for (let t of e.changedTouches) {
+            if (t.identifier === this.touchId) {
+                this.touchId = null;
+                this.touching = false;
+            }
+        }
+    }
+
+    destroy() {
+        canvas.removeEventListener('touchstart', this.onTouchStart);
+        canvas.removeEventListener('touchmove', this.onTouchMove);
+        canvas.removeEventListener('touchend', this.onTouchEnd);
+    }
+
+    update() {
+        const p = this.player;
+        this.shootTimer++;
+        if (this.shootTimer >= p.shootRate) { this.shootTimer = 0; this.shoot(); }
+
+        this.enemyTimer++;
+        const rate = Math.max(18, 55 - this.level * 4);
+        if (this.enemyTimer >= rate) { this.enemyTimer = 0; this.spawnEnemy(); }
+
+        this.powerUpTimer++;
+        if (this.powerUpTimer >= 250) { this.powerUpTimer = 0; this.spawnPowerUp(); }
+
+        this.bullets.forEach(b => b.y -= b.speed);
+        this.bullets = this.bullets.filter(b => b.y > -10);
+
+        this.enemies.forEach(e => {
+            e.y += e.speed;
+            e.angle += e.rotSpeed;
+            if (e.zig) e.x += e.zigDir * 1.5;
+            e.x = Math.max(e.w/2, Math.min(DESIGN_W - e.w/2, e.x));
+        });
+        this.enemies = this.enemies.filter(e => e.y < DESIGN_H + 50);
+
+        this.powerUps.forEach(pu => pu.y += 1.5);
+        this.powerUps = this.powerUps.filter(pu => pu.y < DESIGN_H + 20);
+
+        this.particles.forEach(pt => { pt.x += pt.vx; pt.y += pt.vy; pt.life--; pt.alpha = pt.life / pt.maxLife; });
+        this.particles = this.particles.filter(pt => pt.life > 0);
+
+        this.checkCollisions();
+        this.level = Math.floor(this.score / 150) + 1;
+        this.updateUI();
+    }
+
+    shoot() {
+        this.bullets.push({x: this.player.x, y: this.player.y - 28, w: 4, h: 4, speed: 7, damage: 1});
+        if (this.level >= 3) {
+            this.bullets.push({x: this.player.x - 18, y: this.player.y - 22, w: 3, h: 3, speed: 6, damage: 1});
+            this.bullets.push({x: this.player.x + 18, y: this.player.y - 22, w: 3, h: 3, speed: 6, damage: 1});
+        }
+        if (this.level >= 6) {
+            this.bullets.push({x: this.player.x - 10, y: this.player.y - 28, w: 3, h: 3, speed: 7, damage: 1});
+            this.bullets.push({x: this.player.x + 10, y: this.player.y - 28, w: 3, h: 3, speed: 7, damage: 1});
+        }
+    }
+
+    bomb() {
+        if (this.bombCount <= 0) return;
+        this.bombCount--;
+        this.enemies.forEach(e => { this.score += 10; this.spawnExplosion(e.x, e.y, 15); });
+        this.enemies = [];
+        this.updateBombBtn();
+    }
+
+    updateBombBtn() {
+        const btn = this._bombBtn;
+        btn.textContent = this.bombCount > 0 ? `💣×${this.bombCount}` : '💣';
+        btn.style.opacity = this.bombCount > 0 ? '1' : '0.3';
+    }
+
+    spawnEnemy() {
+        const types = ['basic','fast','tank','zigzag'];
+        let type = types[Math.floor(Math.random() * Math.min(types.length, 1 + Math.floor(this.level / 2)))];
+        let e = {x: 30 + Math.random() * (DESIGN_W - 60), y: -30, w: 30, h: 30, angle: 0, rotSpeed: 0};
+        switch(type) {
+            case 'basic': e.hp=1; e.speed=2+Math.random(); e.rotSpeed=0.05; e.color='#e74c3c'; break;
+            case 'fast': e.hp=1; e.speed=4+Math.random(); e.rotSpeed=0.1; e.color='#e67e22'; e.w=25; e.h=25; break;
+            case 'tank': e.hp=3; e.speed=1+Math.random()*0.5; e.rotSpeed=0.02; e.color='#8e44ad'; e.w=40; e.h=40; break;
+            case 'zigzag': e.hp=2; e.speed=2.5; e.rotSpeed=0.08; e.color='#2ecc71'; e.w=28; e.h=28; e.zig=true; e.zigDir=Math.random()>0.5?1:-1; break;
+        }
+        this.enemies.push(e);
+    }
+
+    spawnPowerUp() {
+        const types = ['life','power','bomb'];
+        let type = types[Math.floor(Math.random() * types.length)];
+        this.powerUps.push({x: 30 + Math.random() * (DESIGN_W - 60), y: -20, type});
+    }
+
+    checkCollisions() {
+        this.bullets.forEach(b => {
+            this.enemies = this.enemies.filter(e => {
+                if (this.collide(b, e)) {
+                    e.hp -= b.damage;
+                    this.spawnExplosion(b.x, b.y, 3);
+                    if (e.hp <= 0) {
+                        this.score += e.color === '#8e44ad' ? 30 : 10;
+                        this.spawnExplosion(e.x, e.y, 20);
+                        return false;
+                    }
+                    return true;
+                }
+                return true;
+            });
+        });
+
+        this.enemies.forEach(e => {
+            if (this.collide(e, this.player)) {
+                this.lives--;
+                this.spawnExplosion(e.x, e.y, 20);
+                e.y = DESIGN_H + 100;
+                if (this.lives <= 0) this.gameOver();
+            }
+        });
+
+        this.powerUps.forEach((pu, i) => {
+            if (Math.abs(pu.x - this.player.x) < 30 && Math.abs(pu.y - this.player.y) < 30) {
+                if (pu.type === 'life') this.lives = Math.min(5, this.lives + 1);
+                if (pu.type === 'power') this.player.shootRate = Math.max(4, this.player.shootRate - 2);
+                if (pu.type === 'bomb') { this.bombCount = Math.min(3, this.bombCount + 1); this.updateBombBtn(); }
+                this.spawnExplosion(pu.x, pu.y, 10);
+                this.powerUps.splice(i, 1);
+            }
+        });
+    }
+
+    collide(a, b) {
+        return Math.abs(a.x - b.x) < (a.w + b.w) / 2 && Math.abs(a.y - b.y) < (a.h + b.h) / 2;
+    }
+
+    spawnExplosion(x, y, count) {
+        for (let i = 0; i < count; i++) {
+            this.particles.push({
+                x, y, vx: (Math.random()-0.5)*6, vy: (Math.random()-0.5)*6,
+                life: 20+Math.random()*15, maxLife: 35, alpha: 1,
+                color: ['#ff6b81','#ffb6c1','#f5a623','#fff'][Math.floor(Math.random()*4)],
+                size: 2+Math.random()*3
+            });
+        }
+    }
+
+    draw() {
+        ctx.fillStyle = '#1a0a2e';
+        ctx.fillRect(0, 0, DESIGN_W, DESIGN_H);
+
+        this.stars.forEach(s => {
+            s.y = (s.y + s.sp) % DESIGN_H;
+            ctx.fillStyle = `rgba(255,182,193,${0.3 + Math.random()*0.5})`;
+            ctx.fillRect(s.x, s.y, s.s, s.s);
+        });
+
+        this.drawPlayer();
+        this.drawBullets();
+        this.drawEnemies();
+        this.drawPowerUps();
+        this.drawParticles();
+    }
+
+    drawPlayer() {
+        const p = this.player;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+
+        // 身体
+        ctx.fillStyle = '#f5a623';
+        ctx.beginPath();
+        ctx.ellipse(0, 5, 18, 20, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 左耳
+        ctx.beginPath();
+        ctx.moveTo(-14, -10); ctx.lineTo(-8, -28); ctx.lineTo(-2, -10); ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#ffb6c1';
+        ctx.beginPath();
+        ctx.moveTo(-12, -12); ctx.lineTo(-8, -24); ctx.lineTo(-4, -12); ctx.closePath();
+        ctx.fill();
+
+        // 右耳
+        ctx.fillStyle = '#f5a623';
+        ctx.beginPath();
+        ctx.moveTo(2, -10); ctx.lineTo(8, -28); ctx.lineTo(14, -10); ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#ffb6c1';
+        ctx.beginPath();
+        ctx.moveTo(4, -12); ctx.lineTo(8, -24); ctx.lineTo(12, -12); ctx.closePath();
+        ctx.fill();
+
+        // 脸
+        ctx.fillStyle = '#f5a623';
+        ctx.beginPath();
+        ctx.arc(0, -2, 16, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 眼睛
+        ctx.fillStyle = '#2c3e50';
+        ctx.beginPath();
+        ctx.arc(-6, -5, 3.5, 0, Math.PI * 2);
+        ctx.arc(6, -5, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(-5, -6, 1.2, 0, Math.PI * 2);
+        ctx.arc(7, -6, 1.2, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 鼻子
+        ctx.fillStyle = '#ff6b81';
+        ctx.beginPath();
+        ctx.moveTo(0, 0); ctx.lineTo(-2.5, -2.5); ctx.lineTo(2.5, -2.5); ctx.closePath();
+        ctx.fill();
+
+        // 嘴巴
+        ctx.strokeStyle = '#2c3e50';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(0, 0); ctx.lineTo(-4, 4);
+        ctx.moveTo(0, 0); ctx.lineTo(4, 4);
+        ctx.stroke();
+
+        // 胡须
+        ctx.strokeStyle = '#2c3e50';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-16, -3); ctx.lineTo(-6, 0);
+        ctx.moveTo(-15, 2); ctx.lineTo(-6, 1);
+        ctx.moveTo(6, 0); ctx.lineTo(16, -3);
+        ctx.moveTo(6, 1); ctx.lineTo(15, 2);
+        ctx.stroke();
+
+        // 爪子
+        ctx.fillStyle = '#f5a623';
+        ctx.beginPath();
+        ctx.ellipse(-10, 22, 6, 5, -0.3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(10, 22, 6, 5, 0.3, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+    }
+
+    drawBullets() {
+        this.bullets.forEach(b => {
+            ctx.fillStyle = '#ffb6c1';
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = '#ff6b81';
+            ctx.beginPath();
+            ctx.arc(b.x, b.y, b.w, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+        });
+    }
+
+    drawEnemies() {
+        this.enemies.forEach(e => {
+            ctx.save();
+            ctx.translate(e.x, e.y);
+            ctx.rotate(e.angle);
+            ctx.fillStyle = e.color;
+            ctx.beginPath();
+            ctx.ellipse(0, 0, e.w/2, e.h/2, 0, 0, Math.PI*2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(-e.w/3, -e.h/3, e.w/5, 0, Math.PI*2);
+            ctx.arc(e.w/3, -e.h/3, e.w/5, 0, Math.PI*2);
+            ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.beginPath();
+            ctx.arc(-4, -2, 3, 0, Math.PI*2);
+            ctx.arc(4, -2, 3, 0, Math.PI*2);
+            ctx.fill();
+            ctx.fillStyle = '#000';
+            ctx.beginPath();
+            ctx.arc(-4, -2, 1.5, 0, Math.PI*2);
+            ctx.arc(4, -2, 1.5, 0, Math.PI*2);
+            ctx.fill();
+            ctx.strokeStyle = e.color;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(0, e.h/2);
+            ctx.quadraticCurveTo(10, e.h/2+8, 5, e.h/2+12);
+            ctx.stroke();
+            ctx.restore();
+        });
+    }
+
+    drawPowerUps() {
+        this.powerUps.forEach(pu => {
+            ctx.save();
+            ctx.translate(pu.x, pu.y);
+            ctx.rotate(Date.now() / 300);
+            ctx.fillStyle = pu.type === 'life' ? '#2ecc71' : pu.type === 'power' ? '#e67e22' : '#9b59b6';
+            ctx.beginPath();
+            ctx.arc(0, 0, 12, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.font = '12px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(pu.type === 'life' ? '🐟' : pu.type === 'power' ? '⚡' : '💣', 0, 1);
+            ctx.restore();
+        });
+    }
+
+    drawParticles() {
+        this.particles.forEach(pt => {
+            ctx.globalAlpha = pt.alpha;
+            ctx.fillStyle = pt.color;
+            ctx.fillRect(pt.x - pt.size/2, pt.y - pt.size/2, pt.size, pt.size);
+        });
+        ctx.globalAlpha = 1;
+    }
+
+    updateUI() {
+        document.getElementById('score').textContent = `🐟 ${this.score}`;
+        document.getElementById('lives').textContent = `❤️×${this.lives}`;
+        document.getElementById('level').textContent = `⭐${this.level}`;
+    }
+
+    gameOver() {
+        this.running = false;
+        document.getElementById('gameOver').style.display = 'block';
+        document.getElementById('finalScore').textContent = `🐟 × ${this.score}`;
+        document.getElementById('startBtn').style.display = 'none';
+        this._bombBtn.style.display = 'none';
+        this.destroy();
+    }
+
+    loop() {
+        if (!this.running) return;
+        this.update();
+        this.draw();
+        requestAnimationFrame(() => this.loop());
+    }
+}
+
+function startGame() {
+    if (game) game.destroy();
+    document.getElementById('startBtn').style.display = 'none';
+    document.getElementById('gameOver').style.display = 'none';
+    game = new Game();
+    game.updateBombBtn();
+    document.getElementById('bombBtn').style.display = 'flex';
+    game.loop();
+}
+
+document.getElementById('startBtn').addEventListener('touchstart', function(e) { e.preventDefault(); startGame(); });
+document.getElementById('restartBtn').addEventListener('touchstart', function(e) { e.preventDefault(); startGame(); });
+document.getElementById('startBtn').addEventListener('click', startGame);
+document.getElementById('restartBtn').addEventListener('click', startGame);
+</script>
+</body>
+</html>
